@@ -1,0 +1,7 @@
+__pycache__/
+_cache/
+_devtest/
+output/
+settings.json
+app.log
+*.gif

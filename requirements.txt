@@ -1,0 +1,9 @@
+customtkinter
+numpy
+opencv-python
+Pillow
+scipy
+onnxruntime-gpu
+huggingface_hub
+torch
+transformers
