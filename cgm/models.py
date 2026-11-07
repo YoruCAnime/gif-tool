@@ -57,8 +57,10 @@ def _nms(boxes, scores, iou=0.5):
 
 
 class FaceDetector:
+    MODEL = "models--deepghs--anime_face_detection/snapshots/*/face_detect_v1.4_s/model.onnx"
+
     def __init__(self):
-        self.s = _session(hub_file("models--deepghs--anime_face_detection/snapshots/*/face_detect_v1.4_s/model.onnx"))
+        self.s = _session(hub_file(self.MODEL))
 
     def detect(self, rgb, conf=0.4):
         """Returns [(x1, y1, x2, y2, score)] in the pixels of rgb."""
@@ -78,6 +80,11 @@ class FaceDetector:
         boxes[:, [0, 2]] *= w / nw
         boxes[:, [1, 3]] *= h / nh
         return [(*boxes[i].tolist(), float(scores[i])) for i in _nms(boxes, scores)]
+
+
+class PersonDetector(FaceDetector):
+    """Whole people, so someone turned away still counts."""
+    MODEL = "models--deepghs--anime_person_detection/snapshots/*/person_detect_v1.1_s/model.onnx"
 
 
 class CCIP:
@@ -142,6 +149,11 @@ def get(name):
                 _cache[name] = FaceDetector()
             elif name == "ccip":
                 _cache[name] = CCIP()
+            elif name == "person":
+                try:
+                    _cache[name] = PersonDetector()
+                except Exception:
+                    _cache[name] = None
             else:
                 try:
                     _cache[name] = Clip()

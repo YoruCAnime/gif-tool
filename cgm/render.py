@@ -18,11 +18,22 @@ class Options:
     fps = 25
     pace = 1.0        # shot length multiplier
     max_mb = 15.0
+    solo = False      # only moments with no other face on screen
 
 
 # ---------------------------------------------------------------------------- choosing the moments
-def candidates(members, want_dur):
-    """The best stretch of each face track; long tracks give several."""
+def _others_on_screen(t, others):
+    """For each sample of track t: is another face visible around then? others = tracks of that video and scene."""
+    busy = np.zeros(len(t["t"]), bool)
+    for o in others:
+        busy |= (t["t"] >= o["t"][0] - 0.25) & (t["t"] <= o["t"][-1] + 0.25)
+    return busy
+
+
+def candidates(members, want_dur, company=None):
+    """The best stretch of each face track; long tracks give several.
+
+    company(vi, t) -> the other tracks to keep off screen (solo); None = anyone may be there."""
     cands = []
     all_sharp = np.concatenate([t["sharp"] for _, t in members])
     ref = float(np.percentile(all_sharp, 70)) + 1.0
@@ -38,12 +49,17 @@ def candidates(members, want_dur):
         win = max(1, int(round(min(want_dur, span) * 5)))
         q = hs * np.sqrt(np.minimum(t["sharp"] / ref, 1.5)) * t["score"]
         run = np.convolve(q, np.ones(win) / win, "valid")
+        if company is not None:
+            busy = _others_on_screen(t, company(vi, t))
+            run[np.convolve(busy.astype(np.float32), np.ones(win), "valid") > 0] = -1.0
         # a long scene gives one moment per stretch of about 2 shots
         parts = max(1, int(span // max(1.5, want_dur * 2)))
         for part in range(parts):
             lo = part * len(run) // parts
             hi = max(lo + 1, (part + 1) * len(run) // parts)
             i = lo + int(np.argmax(run[lo:hi]))
+            if run[i] < 0:
+                continue
             cands.append(_candidate(vi, t, i, win, run[i], want_dur, span))
     cands.sort(key=lambda c: -c["score"])
     return cands
@@ -68,10 +84,10 @@ def moment_id(c):
     return (id(c["track"]), int(c["t0"] * 5))
 
 
-def pick_moments(members, n, want_dur, rng, used=None):
+def pick_moments(members, n, want_dur, rng, used=None, company=None):
     """Good moments that are spread out: one per scene first, then allow repeats."""
     used = used if used is not None else set()
-    cands = candidates(members, want_dur)
+    cands = candidates(members, want_dur, company)
     if not cands:
         return []
     for rule in (lambda c: 0.14 <= c["h"] <= 0.62 and c["conf"] >= 0.6 and c["edge"] < 0.3 and c["bright"] >= 55,
@@ -183,6 +199,23 @@ def load_shot(cand, scan, spec, opt, need):
     avail = (len(frames) - 1) / fps
     s.speed = min(1.0, avail / max(1e-3, need))
     return s
+
+
+def alone(shot):
+    """Only one person in what the GIF really shows? Looks at real frames across the shot, not at the scan."""
+    face, person = models.get("face"), models.get("person")
+    for i in np.linspace(0, len(shot.frames) - 1, 5).astype(int):
+        f = shot.frames[i]
+        # a little wider than the shot: the styles' moves show a bit more than the resting crop
+        w, h = shot.cw * 1.2 / 2, shot.ch * 1.2 / 2
+        x1, y1 = max(0, int(shot.cx[i] - w)), max(0, int(shot.cy[i] - h))
+        crop = f[y1:int(shot.cy[i] + h), x1:int(shot.cx[i] + w)]
+        ch, cw = crop.shape[:2]
+        if len([b for b in face.detect(crop) if b[3] - b[1] >= 0.05 * ch]) > 1:
+            return False
+        if person is not None and len([b for b in person.detect(crop, 0.5) if (b[2] - b[0]) * (b[3] - b[1]) >= 0.03 * cw * ch]) > 1:
+            return False
+    return True
 
 
 def verify(shot, refs):
@@ -368,7 +401,20 @@ def make_gif(char, members, scans, style, opt, out_path, seed=None, used=None, l
     specs = style.plan(style.count(opt.length / opt.pace), rng)
     members = match.core_members(members)
     want = max(s["dur"] for s in specs) * opt.pace
-    moments = pick_moments(members, len(specs) * 2, want, rng, used)
+    company = None
+    if opt.solo:
+        own = {id(t) for _, t in char["members"]}
+        by_scene = {}
+        for vi, sc in enumerate(scans):
+            for o in sc["tracks"]:
+                if id(o) not in own:
+                    by_scene.setdefault((vi, o["scene"]), []).append(o)
+        company = lambda vi, t: by_scene.get((vi, t["scene"]), [])
+    moments = pick_moments(members, len(specs) * (4 if opt.solo else 2), want, rng, used, company)
+    if opt.solo:
+        # someone else in the wide picture may still be outside the crop: alone() below decides
+        have = {moment_id(c) for c in moments}
+        moments += [c for c in pick_moments(members, len(specs) * 4, want, rng, used) if moment_id(c) not in have]
     if not moments:
         raise RuntimeError("This character has no usable moments in the video.")
     feats = np.stack([t["feat"] for _, t in members]).astype(np.float32)
@@ -376,7 +422,7 @@ def make_gif(char, members, scans, style, opt, out_path, seed=None, used=None, l
     dist = ccip.distances(feats[:400]) if len(feats) > 1 else np.zeros((1, 1), np.float32)
     best = np.argsort(dist.mean(axis=1))[:8]
     refs = feats[best]
-    shots, rejected, spare = [], 0, []
+    shots, rejected, spare, not_alone = [], 0, [], 0
     for c in moments:
         if len(shots) == len(specs):
             break
@@ -387,6 +433,9 @@ def make_gif(char, members, scans, style, opt, out_path, seed=None, used=None, l
             raise InterruptedError
         s = load_shot(c, scans[c["vi"]], spec, opt, spec["dur"] * opt.pace)
         if s is None:
+            continue
+        if opt.solo and not alone(s):
+            not_alone += 1
             continue
         d, thr = verify(s, refs)
         s.same = d
@@ -408,7 +457,10 @@ def make_gif(char, members, scans, style, opt, out_path, seed=None, used=None, l
             if used is not None:
                 used.add(moment_id(c))
     if not shots:
-        raise RuntimeError("No moments of this character could be used. Try another character or a longer video.")
+        raise RuntimeError("No solo shots of this character were found. Turn Solo off or try another character." if opt.solo
+                           else "No moments of this character could be used. Try another character or a longer video.")
+    if opt.solo:
+        log("Solo: %d shots kept, %d moments left out because someone else was in the picture." % (len(shots), not_alone))
     # few moments: fewer shots rather than the same picture over and over
     if len(shots) < len(specs):
         log("Only %d good moments found, so this GIF is shorter." % len(shots))

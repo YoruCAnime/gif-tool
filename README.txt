@@ -47,14 +47,35 @@ It finds every anime face in the video and groups the faces by character with a 
 recognise anime characters. Your description only chooses WHICH group. Every moment is then checked
 against that character again before it goes in, and doubtful ones are left out.
 
-The hair and eye words are the strongest clues. Clothes words work less reliably: it prefers scenes
-that seem to match, but check the picks. Eye colour is the least reliable. If the description
-keeps choosing someone else, click the right person in the list.
+The hair and eye words are the strongest clues, and eye colour is the least reliable of the two. If the
+description keeps choosing someone else, click the right person in the list.
+
+
+SOLO, DON'T WANT AND TAGS
+Don't want    Starts empty. Type what you don't want, for example: male, glasses, blonde hair, swimsuit.
+              Typing "no male" in the description works too.
+Solo          Off unless you tick it (or type solo). On: each shot shows only this character, checked on the
+              real frames of the GIF for other faces and bodies. Too few solo shots makes a shorter GIF rather
+              than breaking the rule. Off: other people may be in the shot.
+Tags          After a scan the app suggests words for that video: hair colours and clothes it really saw.
+              Click to add a tag, click again to remove it, right-click for Don't want.
+
+CLOTHES
+Clothes are checked scene by scene, so an outfit worn in one scene still counts. Typing only an outfit, like
+"school uniform", lists everyone seen in it, with pictures of them wearing it: the sure ones first, then
+"maybe" ones. If nobody clearly wears it, the app says so and shows the closest guesses. Make GIF then uses
+that character's scenes in the outfit.
+
+FINDING AGAIN
+A scanned video is never scanned again unless the file changes. A new description, Don't want or tag on it
+takes about a second.
 
 GOOD TO KNOW
 - Made for anime / 2D faces. It will not find 3D or live-action people.
 - Characters who are on screen only briefly may give fewer moments, and then the GIF comes out shorter.
 - Very similar-looking characters can get grouped together. The list shows sample faces so you can see.
+- Clothes matching can be wrong, especially for plain or unusual outfits: check the pictures on the cards.
+- Solo is very good but not perfect: a sleeve, or a person mostly out of the shot, can still get through.
 - Opening and ending songs count as part of the video, so a shot can show credits text over her.
   Press Make GIF again for other moments, or use a video without them.
 - GIFs are saved in the "output" folder unless you choose another. "Open folder" opens it.

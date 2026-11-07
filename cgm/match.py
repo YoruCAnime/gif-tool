@@ -24,7 +24,23 @@ COLOURS = {
 }
 OUTFIT_HINTS = ("wear", "dress", "shirt", "uniform", "skirt", "jacket", "coat", "kimono", "armor", "armour", "suit", "hoodie",
                 "sweater", "blouse", "robe", "cloak", "cape", "swimsuit", "bikini", "apron", "hat", "glasses", "ribbon", "choker",
-                "clothes", "outfit", "tie", "scarf", "gloves", "boots", "pants", "shorts", "sailor", "maid", "tshirt", "t-shirt")
+                "clothes", "outfit", "tie", "scarf", "gloves", "boots", "pants", "shorts", "sailor", "maid", "tshirt", "t-shirt",
+                "nurse", "nun", "bunny", "police", "cheerleader", "lingerie", "underwear", "towel", "pajamas", "yukata", "leotard",
+                "tracksuit", "gym", "costume", "stockings", "tights")
+# clothes a scene could show instead: a track 'wears' something when it beats these
+WEAR_OTHERS = ["school uniform", "casual clothes", "t-shirt", "dress", "suit and tie", "armor", "swimsuit", "hoodie", "kimono",
+               "coat", "robe", "maid outfit", "nurse outfit", "sailor uniform"]
+WEAR_MIN = 0.7    # share of the choice among those: 'wears it'. Measured in _dev_tools/qa_wear.py: hospital beds reached 0.69 for 'nurse'
+WEAR_MAYBE = 0.35  # shown below the sure ones as 'maybe': real sailor uniforms measured 0.5-0.7
+WEAR_NOT = 0.5    # unwanted clothes: doubtful scenes go as well
+SUGGEST_WEAR = ["school uniform", "sailor uniform", "maid outfit", "nurse outfit", "swimsuit", "bikini", "armor", "kimono", "yukata",
+                "suit and tie", "dress", "white dress", "black dress", "wedding dress", "hoodie", "coat", "lab coat", "cape", "apron",
+                "gym clothes", "bunny outfit", "police uniform", "witch hat", "hat", "glasses", "ribbon", "headband", "scarf"]
+_wear_txt = {}
+SOLO = r"\b(solo|alone|only her|only him|no other (people|person|characters?|girls?|women|men|boys?|guys?)|other (people|characters?)|others)\b"
+NEGATED = r"\b(?:no|not|non|without)[\s-]+(?:a\s+|an\s+|any\s+)?([^,;/\n]+)"
+GENDER_WORDS = {"male": "man", "males": "man", "man": "man", "men": "man", "boy": "man", "boys": "man", "guy": "man", "guys": "man",
+                "female": "girl", "females": "girl", "woman": "girl", "women": "girl", "girl": "girl", "girls": "girl"}
 
 
 FEMALE = r"\b(girl|woman|female|lady|she|her|heroine|princess|queen|maid|waitress)\b"
@@ -34,12 +50,12 @@ MALE = r"\b(boy|man|male|guy|he|him|hero|king|prince|dude|gentleman)\b"
 def split_description(text):
     """'brown hair, red eye girl, wearing a white dress' -> list of {'text', 'kind', 'colour'}."""
     out = []
-    low = (text or "").lower()
+    low = re.sub(NEGATED, ",", re.sub(SOLO, ",", (text or "").lower()))
     if re.search(FEMALE, low):
         out.append({"text": "girl", "kind": "gender", "colour": None})
     elif re.search(MALE, low):
         out.append({"text": "man", "kind": "gender", "colour": None})
-    t = re.sub(r"\b(eyed|eyes)\b", "eye", text.lower())
+    t = re.sub(r"\b(eyed|eyes)\b", "eye", low)
     t = re.sub(r"\bhaired\b", "hair", t)
     t = re.sub(r"\band\b|\bwith\b|;|/|\n", ",", t)
     names = sorted(COLOURS, key=len, reverse=True)
@@ -59,12 +75,95 @@ def split_description(text):
         if found and not any(h in part for h in OUTFIT_HINTS):
             continue
         text_part = re.sub(r"^(a|an|the|she is|wearing|in)\s+", "", part)
-        text_part = re.sub(FEMALE + "|" + MALE, "", text_part).strip()
+        kind = "outfit" if any(h in part for h in OUTFIT_HINTS) else "other"
+        if kind == "other":  # 'maid outfit' keeps its word, 'girl with horns' loses 'girl'
+            text_part = re.sub(FEMALE + "|" + MALE, "", text_part).strip()
         if not text_part:
             continue
-        kind = "outfit" if any(h in part for h in OUTFIT_HINTS) else "other"
         out.append({"text": text_part, "kind": kind, "colour": None})
     return out
+
+
+def wants_solo(description, negative=""):
+    """'solo' in the description, or 'other people' in the Don't want box."""
+    return bool(re.search(SOLO, ("%s, %s" % (description or "", negative or "")).lower()))
+
+
+def negative_phrases(description, negative=""):
+    """What should NOT be there: the Don't want box plus any 'no ...' typed in the description."""
+    said = [m.group(1) for m in re.finditer(NEGATED, re.sub(SOLO, ",", (description or "").lower()))]
+    box = re.sub(SOLO, ",", (negative or "").lower())
+    out = []
+    for part in re.split(r"[,;/\n]|\band\b|\bor\b", ",".join(said + [box])):
+        part = re.sub(r"^\s*-?\s*((no|not|non|without|any|a|an|the)[\s-]+)*", "", part).strip(" .-")
+        if not part:
+            continue
+        if part in GENDER_WORDS:
+            out.append({"text": GENDER_WORDS[part], "kind": "gender", "colour": None})
+            continue
+        found = [p for p in split_description(part) if p["kind"] != "gender"]
+        out += found or [{"text": part, "kind": "outfit" if any(h in part for h in OUTFIT_HINTS) else "other", "colour": None}]
+    return out
+
+
+def _track_seconds(t):
+    return float(t["t"][-1] - t["t"][0]) + 0.2
+
+
+def _track_clip(tracks):
+    """CLIP picture of each track's head and shoulders; worked out once per track."""
+    clip = models.get("clip")
+    todo = [t for t in tracks if "_clip" not in t]
+    for i in range(0, len(todo), 64):
+        part = todo[i:i + 64]
+        pics = [unjpg(r["bust"]) for t in part for r in t["reps"]]
+        feats = clip.images(pics)
+        k = 0
+        for t in part:
+            f = feats[k:k + len(t["reps"])].mean(axis=0)
+            t["_clip"] = f / (np.linalg.norm(f) + 1e-6)
+            k += len(t["reps"])
+    return np.stack([t["_clip"] for t in tracks]) if tracks else np.zeros((0, 512), np.float32)
+
+
+def wear_scores(tracks, text):
+    """0-1 per track: is this what they wear in that scene, rather than other clothes?"""
+    clip = models.get("clip")
+    drop = {"outfit", "uniform", "clothes", "costume"}
+    words = set(re.findall(r"[a-z-]+", text.lower())) - drop
+    others = [o for o in WEAR_OTHERS if not (set(re.findall(r"[a-z-]+", o)) - drop) & words]
+    choices = [text] + others
+    missing = [x for x in choices if x not in _wear_txt]
+    if missing:
+        _wear_txt.update(zip(missing, clip.texts(["anime character wearing " + x for x in missing])))
+    txt = np.stack([_wear_txt[x] for x in choices])
+    logits = _track_clip(tracks) @ txt.T * 100.0
+    logits -= logits.max(axis=1, keepdims=True)
+    p = np.exp(logits)
+    return p[:, 0] / p.sum(axis=1)
+
+
+def suggest_tags(chars, limit=14):
+    """Words worth trying on this video: the hair colours of its main people and the clothes really seen in it."""
+    describe_characters(chars)
+    hair = []
+    for c in sorted(chars, key=lambda c: -c["seconds"]):
+        name = looks_like(c)
+        if c["seconds"] >= 12 and name not in hair:
+            hair.append(name)
+    tags = hair[:5]
+    clip = models.get("clip")
+    if clip is None or not chars:
+        return tags
+    tags = ["girl", "man"] + tags
+    tracks = [t for c in chars for _, t in c["members"]]
+    secs = np.array([_track_seconds(t) for t in tracks], np.float32)
+    seen = []
+    for word in SUGGEST_WEAR:
+        total = float(secs[wear_scores(tracks, word) >= WEAR_MIN].sum())
+        if total >= 3.0:
+            seen.append((total, word))
+    return tags + [w for _, w in sorted(seen, reverse=True)[:max(0, limit - len(tags))]]
 
 
 def _lab(rgb):
@@ -213,14 +312,18 @@ def _z(v):
     return (v - v.mean()) / (v.std() + 1e-4)
 
 
-def rank_characters(chars, description):
-    """Sorts chars best match first; each gets c['match'] (0-100) and c['why']."""
+def rank_characters(chars, description, negative=""):
+    """Sorts chars best match first; each gets c['match'] (0-100), c['why'] and, for clothes words,
+    c['wear'] (their tracks in that outfit) and c['show'] (pictures of them in it)."""
     describe_characters(chars)
     phrases = split_description(description or "")
+    unwanted = negative_phrases(description, negative)
+    for c in chars:
+        c["show"], c["wear"], c["wear_seconds"], c["wear_maybe"] = c.get("thumbs"), [], 0.0, False
     if not chars:
         return chars
     presence = _z(np.log1p([c["seconds"] for c in chars]))
-    if not phrases:
+    if not phrases and not unwanted:
         for c, p in zip(chars, presence):
             c["score"], c["why"] = float(p), "on screen %.0f s" % c["seconds"]
         chars.sort(key=lambda c: -c["score"])
@@ -233,8 +336,43 @@ def rank_characters(chars, description):
     total = 0.3 * presence - np.array([1.5 if c["seconds"] < 3 else (0.5 if c["seconds"] < 12 else 0.0) for c in chars], np.float32)
     raw_col = np.zeros((len(chars), max(1, len(phrases))), np.float32)
     n_col = 0
+    outfits = [p for p in phrases if p["kind"] == "outfit"] if clip is not None else []
+    if outfits:
+        # scene by scene: an outfit worn in one scene would vanish in an average of the whole show
+        probs = [np.min([wear_scores([t for _, t in c["members"]], o["text"]) for o in outfits], axis=0) for c in chars]
+        for i, c in enumerate(chars):
+            tracks = [t for _, t in c["members"]]
+            hits = [(float(v), k) for k, v in enumerate(probs[i]) if v >= WEAR_MIN]
+            c["wear_maybe"] = not hits
+            hits = hits or [(float(v), k) for k, v in enumerate(probs[i]) if v >= WEAR_MAYBE]
+            if not hits:
+                continue
+            c["wear"] = [c["members"][k] for _, k in hits]
+            c["wear_seconds"] = sum(_track_seconds(tracks[k]) for _, k in hits)
+            best = sorted(hits, reverse=True)[:4]
+            c["show"] = [unjpg(tracks[k]["reps"][-1]["bust"]) for _, k in best]
+            # anyone clearly wearing it comes first; beyond 5 s more screen time adds nothing
+            total[i] += (1.0 if c["wear_maybe"] else 2.5) * min(1.0, np.log1p(c["wear_seconds"]) / np.log1p(5.0))
+    for ph in unwanted:
+        if ph["colour"]:
+            own = "hair" if ph["kind"] == "hair" else "eye"
+            total -= (2.5 if own == "hair" else 1.5) * np.array([colour_score(c[own], ph["colour"]) for c in chars], np.float32)
+        elif clip is None or "clip" not in chars[0]:
+            continue
+        elif ph["kind"] == "gender":
+            other = "man" if ph["text"] == "girl" else "girl"
+            txt = clip.texts(["portrait of an anime " + ph["text"], "portrait of an anime " + other])
+            total -= 3.0 * np.clip(_z([float(c["clip"] @ txt[0]) - float(c["clip"] @ txt[1]) for c in chars]), 0, None)
+        elif ph["kind"] == "outfit":
+            # share of their scenes in it: someone always in it sinks, someone only sometimes in it stays
+            total -= 2.5 * np.array([float((wear_scores([t for _, t in c["members"]], ph["text"]) >= WEAR_NOT).mean()) for c in chars], np.float32)
+        else:
+            txt = clip.texts(["anime character with " + ph["text"], "anime character"])
+            total -= 1.5 * np.clip(_z([float(c["clip"] @ txt[0]) - float(c["clip"] @ txt[1]) for c in chars]), 0, None)
     for pi, ph in enumerate(phrases):
         parts = []
+        if ph["kind"] == "outfit" and clip is not None:
+            continue
         if ph["colour"]:
             v = [colour_score(c["hair"] if ph["kind"] == "hair" else c["eye"], ph["colour"]) for c in chars]
             raw_col[:, pi] = v
@@ -282,15 +420,27 @@ def core_members(members):
     return keep if len(keep) >= max(4, len(members) // 3) else members
 
 
-def outfit_filter(char, description):
-    """Only the tracks where she wears what the description says, if enough of them exist."""
-    phrases = [p for p in split_description(description or "") if p["kind"] == "outfit"]
-    clip = models.get("clip")
+def outfit_filter(char, description, negative=""):
+    """Only the tracks in the wanted clothes and not in the unwanted ones, if any such tracks exist."""
+    wanted = [p for p in split_description(description or "") if p["kind"] == "outfit"]
+    unwanted = [p for p in negative_phrases(description, negative) if p["kind"] == "outfit"]
     members = char["members"]
-    if not phrases or clip is None or len(members) < 16:
+    if models.get("clip") is None or not (wanted or unwanted):
         return members
-    feats = clip.images([unjpg(t["reps"][-1]["bust"]) for _, t in members])
-    txt = clip.texts(["anime character wearing " + p["text"] for p in phrases] + ["anime character"])
-    score = (feats @ txt[:-1].T).mean(axis=1) - feats @ txt[-1]
-    keep = np.argsort(-score)[:max(10, len(members) // 3)]
-    return [members[i] for i in keep]
+    tracks = [t for _, t in members]
+    keep = np.ones(len(tracks), bool)
+    if wanted:
+        p = np.min([wear_scores(tracks, o["text"]) for o in wanted], axis=0)
+        for limit in (WEAR_MIN, WEAR_MAYBE):
+            hit = p >= limit
+            if sum(_track_seconds(t) for t, h in zip(tracks, hit) if h) >= 3.0:
+                keep = hit
+                break
+        else:  # nobody is sure: the closest third
+            keep = np.zeros(len(tracks), bool)
+            keep[np.argsort(-p)[:max(10, len(tracks) // 3)]] = True
+    for o in unwanted:
+        clean = keep & (wear_scores(tracks, o["text"]) < WEAR_NOT)
+        if clean.any():
+            keep = clean
+    return [m for m, k in zip(members, keep) if k]

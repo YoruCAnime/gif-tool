@@ -18,7 +18,7 @@ import customtkinter as ctk
 from PIL import Image, ImageSequence, ImageTk
 
 SETTINGS = os.environ.get("CGM_SETTINGS") or os.path.join(ROOT, "settings.json")
-DEFAULTS = {"videos": [], "description": "", "style": "Slide & settle", "length": 6, "pace": "Normal", "shape": "Portrait",
+DEFAULTS = {"videos": [], "description": "", "negative": "", "solo": False, "style": "Slide & settle", "length": 6, "pace": "Normal", "shape": "Portrait",
             "fps": "25", "height": "480", "max_mb": "15", "out": os.path.join(ROOT, "output")}
 PACES = {"Fast": 0.75, "Normal": 1.0, "Slow": 1.35}
 SHAPES = {"Portrait": 0.9, "Square": 1.0, "Phone": 0.5625, "Wide": 1.7778}
@@ -57,6 +57,7 @@ class App(ctk.CTk):
         self.chars = []
         self.ranked_for = None
         self.selected = None
+        self.tags = []
         self.results = []
         self.play_job = None
         self.play_frames = []
@@ -100,6 +101,14 @@ class App(ctk.CTk):
         r += 1
         self.desc.insert("1.0", self.cfg["description"])
         ctk.CTkLabel(f, text="For example: " + PLACEHOLDER, text_color="#9a9aa2", font=ctk.CTkFont(size=11), anchor="w", justify="left", wraplength=310).grid(row=r, column=0, sticky="ew", padx=12)
+        r += 1
+        ctk.CTkLabel(f, text="Don't want (optional), e.g. male, glasses", font=ctk.CTkFont(size=12), anchor="w").grid(row=r, column=0, sticky="ew", padx=12, pady=(6, 0))
+        r += 1
+        self.neg_var = tk.StringVar(value=self.cfg["negative"])
+        ctk.CTkEntry(f, textvariable=self.neg_var, placeholder_text="male, glasses, swimsuit").grid(row=r, column=0, sticky="ew", padx=12)
+        r += 1
+        self.solo_var = tk.BooleanVar(value=bool(self.cfg["solo"]))
+        ctk.CTkCheckBox(f, text="Solo: only this character in each shot", variable=self.solo_var, font=ctk.CTkFont(size=12), checkbox_width=18, checkbox_height=18, fg_color=ACCENT, hover_color=ACCENT_HOVER).grid(row=r, column=0, sticky="w", padx=12, pady=(6, 0))
         r += 1
         self.find_btn = ctk.CTkButton(f, text="Find her", fg_color="#44444c", hover_color="#55555e", command=self.on_find)
         self.find_btn.grid(row=r, column=0, sticky="ew", padx=12, pady=(6, 0))
@@ -160,11 +169,14 @@ class App(ctk.CTk):
     def _middle(self):
         f = ctk.CTkFrame(self, corner_radius=0, fg_color="transparent")
         f.grid(row=0, column=1, sticky="nsew", padx=(8, 4), pady=8)
-        f.grid_rowconfigure(1, weight=1)
+        f.grid_rowconfigure(2, weight=1)
         f.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(f, text="Who I found (click to choose)", font=ctk.CTkFont(size=13, weight="bold"), anchor="w").grid(row=0, column=0, sticky="ew", pady=(2, 4))
+        self.tag_box = ctk.CTkFrame(f, fg_color="transparent")
+        self.tag_box.grid(row=0, column=0, sticky="ew")
+        self.tag_box.grid_columnconfigure((0, 1, 2, 3), weight=1)
+        ctk.CTkLabel(f, text="Who I found (click to choose)", font=ctk.CTkFont(size=13, weight="bold"), anchor="w").grid(row=1, column=0, sticky="ew", pady=(2, 4))
         self.gallery = ctk.CTkScrollableFrame(f, fg_color="#1d1d21")
-        self.gallery.grid(row=1, column=0, sticky="nsew")
+        self.gallery.grid(row=2, column=0, sticky="nsew")
         self.gallery.grid_columnconfigure(0, weight=1)
         self.empty = ctk.CTkLabel(self.gallery, text="Choose a video and press Find her,\nor just press Make GIF.", text_color="#9a9aa2")
         self.empty.grid(row=0, column=0, pady=40)
@@ -232,7 +244,7 @@ class App(ctk.CTk):
         return self.desc.get("1.0", "end").strip()
 
     def save_settings(self):
-        self.cfg.update(videos=self.videos(), description=self.description(), style=self.style_var.get(), length=int(self.length_var.get()),
+        self.cfg.update(videos=self.videos(), description=self.description(), negative=self.neg_var.get().strip(), solo=bool(self.solo_var.get()), style=self.style_var.get(), length=int(self.length_var.get()),
                         pace=self.pace_var.get(), shape=self.shape_var.get(), fps=self.fps_var.get(), height=self.height_var.get(),
                         max_mb=self.mb_var.get(), out=self.out_var.get())
         try:
@@ -267,6 +279,8 @@ class App(ctk.CTk):
                     self.say(*data)
                 elif kind == "chars":
                     self.show_chars()
+                elif kind == "tags":
+                    self.show_tags()
                 elif kind == "result":
                     self.add_result(data)
                 elif kind == "done":
@@ -290,6 +304,8 @@ class App(ctk.CTk):
         self.stop_flag.clear()
         self.job_videos = self.videos()
         self.job_desc = self.description()
+        self.job_neg = self.neg_var.get().strip()
+        self.job_solo = bool(self.solo_var.get())
         self.set_busy(True)
 
         def run():
@@ -320,11 +336,14 @@ class App(ctk.CTk):
             self.chars = match.group_characters(scans)
             self.scans, self.scan_key, self.ranked_for = scans, key, None
             self.selected = None
-        desc = self.job_desc
-        if desc != self.ranked_for or self.selected is None:
+            self.q.put(("say", ("Looking for tags to suggest", 0.94)))
+            self.tags = match.suggest_tags(self.chars)
+            self.q.put(("tags", None))
+        wanted = (self.job_desc, self.job_neg)
+        if wanted != self.ranked_for or self.selected is None:
             self.q.put(("say", ("Comparing with your description", 0.95)))
-            self.chars = match.rank_characters(self.chars, desc)
-            self.ranked_for = desc
+            self.chars = match.rank_characters(self.chars, *wanted)
+            self.ranked_for = wanted
             self.selected = self.chars[0] if self.chars else None
             self.q.put(("chars", None))
         if not self.chars:
@@ -333,6 +352,12 @@ class App(ctk.CTk):
     def on_find(self):
         def job():
             self._find()
+            sure = sum(1 for c in self.chars if c["wear"] and not c["wear_maybe"])
+            maybe = sum(1 for c in self.chars if c["wear"] and c["wear_maybe"])
+            if sure:
+                return "Wearing that: %d, maybe: %d. Pictures show them in it; click one to choose." % (sure, maybe)
+            if maybe:
+                return "Nobody clearly wears that. Showing the closest guesses."
             return "Found %d characters. The best match is highlighted; click another if it is wrong." % len(self.chars)
         self._start(job)
 
@@ -350,10 +375,11 @@ class App(ctk.CTk):
             from cgm import match, render
             self._find()
             char = self.selected
-            members = match.outfit_filter(char, self.job_desc)
+            members = match.outfit_filter(char, self.job_desc, self.job_neg)
             opt = render.Options()
             for k, v in opt_values.items():
                 setattr(opt, k, v)
+            opt.solo = self.job_solo or match.wants_solo(self.job_desc, self.job_neg)
             todo = [s for s in self.styles.ALL] if name == ALL_STYLES else [self.styles.by_name(name)]
             stem = safe_name(os.path.splitext(os.path.basename(self.job_videos[0]))[0])
             used = set()
@@ -391,21 +417,49 @@ class App(ctk.CTk):
             card.grid(row=i, column=0, sticky="ew", padx=4, pady=3)
             card.grid_columnconfigure(1, weight=1)
             pics = ctk.CTkFrame(card, fg_color="transparent")
-            pics.grid(row=0, column=0, rowspan=2, padx=6, pady=6)
+            pics.grid(row=0, column=0, rowspan=2, padx=6, pady=6, sticky="w")
+            card.grid_columnconfigure(0, minsize=216)
             clicks = [card, pics]
-            for k, th in enumerate(c["thumbs"][:3]):
+            for k, th in enumerate((c.get("show") or c["thumbs"])[:3]):
                 img = ctk.CTkImage(Image.fromarray(th), size=(66, 66))
                 lab = ctk.CTkLabel(pics, image=img, text="")
                 lab.grid(row=0, column=k, padx=1)
                 clicks.append(lab)
             top = ctk.CTkLabel(card, text="Match %d%%" % c.get("match", 0), font=ctk.CTkFont(size=13, weight="bold"), anchor="w")
             top.grid(row=0, column=1, sticky="ew", padx=4, pady=(6, 0))
-            sub = ctk.CTkLabel(card, text="%s\non screen %d s" % (c.get("why", ""), c["seconds"]), text_color="#b8b8c0", font=ctk.CTkFont(size=11), anchor="w", justify="left", wraplength=135)
+            note = "%s\non screen %d s" % (c.get("why", ""), c["seconds"])
+            if c.get("wear"):
+                note += "\n%s %d s" % ("maybe in that:" if c.get("wear_maybe") else "in that outfit:", c["wear_seconds"])
+            sub = ctk.CTkLabel(card, text=note, text_color="#b8b8c0", font=ctk.CTkFont(size=11), anchor="w", justify="left", wraplength=135)
             sub.grid(row=1, column=1, sticky="ew", padx=4, pady=(0, 6))
             clicks += [top, sub]
             for w in clicks:
                 w.bind("<Button-1>", lambda e, ch=c: self.pick(ch))
             self.cards.append((card, c))
+
+    def show_tags(self):
+        for w in self.tag_box.winfo_children():
+            w.destroy()
+        if not self.tags:
+            return
+        ctk.CTkLabel(self.tag_box, text="Suggested tags (click = add, right-click = don't want)", font=ctk.CTkFont(size=12, weight="bold"), anchor="w").grid(row=0, column=0, columnspan=4, sticky="ew")
+        for i, tag in enumerate(self.tags):
+            b = ctk.CTkButton(self.tag_box, text=tag, height=22, width=60, font=ctk.CTkFont(size=11), fg_color="#44444c", hover_color="#55555e", command=lambda t=tag: self.use_tag(t))
+            b.grid(row=1 + i // 4, column=i % 4, sticky="ew", padx=1, pady=1)
+            b.bind("<Button-3>", lambda e, t=tag: self.use_tag(t, True))
+        ctk.CTkLabel(self.tag_box, text="", height=4).grid(row=2 + len(self.tags) // 4, column=0)
+
+    def use_tag(self, tag, unwanted=False):
+        """Adds the tag to its box (a second click takes it out), then finds again: no new scan."""
+        text = self.neg_var.get() if unwanted else self.description()
+        parts = [p.strip() for p in text.replace("\n", ",").split(",") if p.strip()]
+        parts = [p for p in parts if p.lower() != tag] if tag in [p.lower() for p in parts] else parts + [tag]
+        if unwanted:
+            self.neg_var.set(", ".join(parts))
+        else:
+            self.desc.delete("1.0", "end")
+            self.desc.insert("1.0", ", ".join(parts))
+        self.on_find()
 
     def pick(self, char):
         self.selected = char
