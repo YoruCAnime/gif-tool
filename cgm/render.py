@@ -7,7 +7,7 @@ import time
 import cv2
 import numpy as np
 
-from . import gifenc, match, models, styles
+from . import gifenc, match, models, styles, watchdog
 from .scan import CACHE, crop_pad, head_box, proc_flags, unjpg
 
 
@@ -359,6 +359,7 @@ def render(shots, specs, style, opt, progress=None, stop=None):
     for fi in range(n_out):
         if stop is not None and stop.is_set():
             raise InterruptedError
+        watchdog.check(stop)
         T = fi / opt.fps
         act = active(T)
         i, lt = act[-1]
@@ -431,6 +432,7 @@ def make_gif(char, members, scans, style, opt, out_path, seed=None, used=None, l
             progress(len(shots) / len(specs) * 0.3, "Fetching moment %d of %d" % (len(shots) + 1, len(specs)))
         if stop is not None and stop.is_set():
             raise InterruptedError
+        watchdog.check(stop)
         s = load_shot(c, scans[c["vi"]], spec, opt, spec["dur"] * opt.pace)
         if s is None:
             continue

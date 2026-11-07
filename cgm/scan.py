@@ -12,7 +12,7 @@ import sys
 import cv2
 import numpy as np
 
-from . import models
+from . import models, watchdog
 
 SAMPLE_FPS = 5.0
 SCAN_H = 540
@@ -186,6 +186,7 @@ def scan_video(path, progress=None, stop=None):
                 break
             if stop is not None and stop.is_set():
                 raise InterruptedError
+            watchdog.check(stop)
             frame = np.frombuffer(raw, np.uint8).reshape(SCAN_H, sw, 3)
             gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
             if idx % 5 == 0:

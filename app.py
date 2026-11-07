@@ -309,10 +309,14 @@ class App(ctk.CTk):
         self.set_busy(True)
 
         def run():
+            from cgm import watchdog
             try:
-                self.q.put(("done", target()))
+                with watchdog.Guard(say=lambda m: self.q.put(("say", (m, None)))):
+                    self.q.put(("done", target()))
             except InterruptedError:
                 self.q.put(("done", "Stopped."))
+            except watchdog.Stopped as e:
+                self.q.put(("done", "Stopped: %s" % e))
             except Exception as e:
                 traceback.print_exc()
                 self.q.put(("done", "Problem: %s" % str(e).replace("\n", " ")))

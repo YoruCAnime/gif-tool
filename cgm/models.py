@@ -8,13 +8,20 @@ import glob
 import json
 import os
 import threading
+import time
 
 import cv2
 import numpy as np
 
 HUB = os.path.expanduser(r"~\.cache\huggingface\hub")
+REST = 0.5  # after each piece of video card work, rest this share of the time it took: the card is never busy more than 2/3 of the time
 _lock = threading.Lock()
 _cache = {}
+
+
+def _rest(since):
+    """Called after a piece of video card work that began at `since`."""
+    time.sleep((time.perf_counter() - since) * REST)
 
 
 def hub_file(pattern):
@@ -24,7 +31,8 @@ def hub_file(pattern):
     return hits[0]
 
 
-def _session(path, threads=2):
+def _session(path, threads=2, vram_gb=2.0):
+    """vram_gb: the most of the video card's memory this model may take; past it the run fails rather than the card."""
     try:
         import torch  # noqa: F401  (puts the CUDA 12 dlls on the path for onnxruntime)
     except Exception:
@@ -34,8 +42,8 @@ def _session(path, threads=2):
     opts.intra_op_num_threads = threads
     opts.log_severity_level = 3
     providers = ["CPUExecutionProvider"]
-    if "CUDAExecutionProvider" in ort.get_available_providers():
-        providers.insert(0, ("CUDAExecutionProvider", {"arena_extend_strategy": "kSameAsRequested"}))
+    if "CUDAExecutionProvider" in ort.get_available_providers() and not os.environ.get("CGM_CPU"):
+        providers.insert(0, ("CUDAExecutionProvider", {"arena_extend_strategy": "kSameAsRequested", "gpu_mem_limit": str(int(vram_gb * 1024 ** 3))}))
     return ort.InferenceSession(path, opts, providers=providers)
 
 
@@ -68,7 +76,9 @@ class FaceDetector:
         nw, nh = max(32, round(w / 32) * 32), max(32, round(h / 32) * 32)
         img = rgb if (nw, nh) == (w, h) else cv2.resize(rgb, (nw, nh), interpolation=cv2.INTER_AREA)
         data = (img.astype(np.float32) / 255.0).transpose(2, 0, 1)[None]
+        began = time.perf_counter()
         out = self.s.run(None, {"images": data})[0][0]
+        _rest(began)
         if out.shape[0] < out.shape[1]:
             out = out.T
         scores = out[:, 4:].max(axis=1)
@@ -98,19 +108,24 @@ class CCIP:
         with open(hub_file(base + "metrics.json"), encoding="utf-8") as f:
             self.threshold = float(json.load(f)["threshold"])
 
-    def embed(self, rgb_list, batch=16):
+    def embed(self, rgb_list, batch=4):
         out = []
         for i in range(0, len(rgb_list), batch):
             arr = np.stack([cv2.resize(x, (384, 384), interpolation=cv2.INTER_LINEAR) for x in rgb_list[i:i + batch]])
             arr = ((arr.astype(np.float32) / 255.0 - 0.5) / 0.5).transpose(0, 3, 1, 2)
+            began = time.perf_counter()
             out.append(self.feat.run(None, {"input": arr})[0])
+            _rest(began)
         return np.concatenate(out) if out else np.zeros((0, 768), np.float32)
 
     def distances(self, feats):
         """All-against-all difference matrix (below self.threshold = same character)."""
         if self.metric is None:
             self.metric = _session(self._metric_path)
-        return self.metric.run(None, {"input": feats.astype(np.float32)})[0]
+        began = time.perf_counter()
+        out = self.metric.run(None, {"input": feats.astype(np.float32)})[0]
+        _rest(began)
+        return out
 
 
 class Clip:
@@ -121,17 +136,19 @@ class Clip:
         from transformers import CLIPModel, CLIPProcessor
         path = glob.glob(os.path.join(HUB, "models--openai--clip-vit-base-patch32", "snapshots", "*"))[0]
         self.torch = torch
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = "cuda" if torch.cuda.is_available() and not os.environ.get("CGM_CPU") else "cpu"
         self.model = CLIPModel.from_pretrained(path, local_files_only=True).to(self.device).eval()
         self.proc = CLIPProcessor.from_pretrained(path, local_files_only=True)
 
-    def images(self, rgb_list, batch=32):
+    def images(self, rgb_list, batch=8):
         out = []
         with self.torch.no_grad():
             for i in range(0, len(rgb_list), batch):
+                began = time.perf_counter()
                 inp = self.proc(images=list(rgb_list[i:i + batch]), return_tensors="pt").to(self.device)
                 f = self.model.get_image_features(**inp)
                 out.append((f / f.norm(dim=-1, keepdim=True)).cpu().numpy())
+                _rest(began)
         return np.concatenate(out) if out else np.zeros((0, 512), np.float32)
 
     def texts(self, texts):

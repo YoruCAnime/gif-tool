@@ -70,6 +70,12 @@ FINDING AGAIN
 A scanned video is never scanned again unless the file changes. A new description, Don't want or tag on it
 takes about a second.
 
+WATCHDOG
+While it works, the app watches the PC's free memory, its own size, and the video card's heat and memory.
+If something gets tight it waits, and the bottom line says why ("Cooling down"). It carries on when that
+clears. If it doesn't clear in 5 minutes, memory is nearly gone, or the card stops responding, the job ends
+with a message. This protects against the app's own load, but a faulty card or driver can still crash.
+
 GOOD TO KNOW
 - Made for anime / 2D faces. It will not find 3D or live-action people.
 - Characters who are on screen only briefly may give fewer moments, and then the GIF comes out shorter.
